@@ -1,24 +1,35 @@
-# VeeamHub Repository Template
+# VBR Configuration Collector
 
-Here are instructions on how to use this template:
+PowerShell script that discovers the latest Swagger API version on a Veeam Backup & Replication server and collects configuration data via the REST API. Designed for auditing, support and troubleshooting scenarios.
 
-* Navigate to the [main page of this repository](https://github.com/VeeamHub/veeamhub-template)
-* Follow instructions for [creating a repository from a template](https://help.github.com/en/articles/creating-a-repository-from-a-template)
-  * _Repository names **must** have the prefix:_ **veeam-**
-  * Example: _veeam-repo-name_
-* Replace **all** repository-specific links
-  * `issues` link in _README.md_
-  * `create an issue` link in _README.md_
-  * `opening a new issue` link in _CONTRIBUTING.md_
-* Remove the instructions from this section and replace it with information describing this repository.
+Features
+
+Dynamic Swagger discovery — automatically detects available API versions from the Swagger UI endpoints, with a hardcoded fallback list for offline or restricted environments.
+Excludes sensitive endpoints (credentials, encryption passwords, user data, certificates) and supports context-aware data masking with a reversible mapping file.
+Single-file JSON export — all collected endpoint data exported to a formatted JSON file with metadata (timestamps, version info, success/failure counts).
+
+Usage
+
+Run the script in PowerShell:
+powershell   .\VBR_Configuration_Collector_v1_0_4.ps1
+
+Enter the VBR server address, port (default: 9419), and credentials when prompted
+Choose output location and whether to enable data masking
+The script collects data from all parameter-free GET endpoints and exports the results
+
+Requirements
+
+PowerShell 5.1 or later
+Network access to the VBR REST API (default port 9419)
+Valid VBR credentials with API access
 
 ## 📗 Documentation
 
-_Place documentation or links to documentation here._
+There is no dedicated documentation.
 
 ## ✍ Contributions
 
-We welcome contributions from the community! We encourage you to create [issues](https://github.com/VeeamHub/{repo-name}/issues/new/choose) for Bugs & Feature Requests and submit Pull Requests. For more detailed information, refer to our [Contributing Guide](CONTRIBUTING.md).
+We encourage you to create [issues](https://github.com/VeeamHub/{repo-name}/issues/new/choose) for Bugs & Feature Requests and submit Pull Requests.
 
 ## 🤝🏾 License
 
