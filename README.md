@@ -29,7 +29,7 @@ There is no dedicated documentation.
 
 ## ✍ Contributions
 
-We encourage you to create [issues](https://github.com/VeeamHub/{repo-name}/issues/new/choose) for Bugs & Feature Requests and submit Pull Requests.
+We encourage you to create [issues](https://github.com/VeeamHub/veeam-config-collector/issues/new/choose) for Bugs & Feature Requests and submit Pull Requests.
 
 ## 🤝🏾 License
 
@@ -37,4 +37,4 @@ We encourage you to create [issues](https://github.com/VeeamHub/{repo-name}/issu
 
 ## 🤔 Questions
 
-If you have any questions or something is unclear, please don't hesitate to [create an issue](https://github.com/VeeamHub/{repo-name}/issues/new/choose) and let us know!
+If you have any questions or something is unclear, please don't hesitate to [create an issue](https://github.com/VeeamHub/veeam-config-collector/issues/new/choose) and let us know!
