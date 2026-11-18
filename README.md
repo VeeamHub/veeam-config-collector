@@ -17,6 +17,8 @@ Enter the VBR server address, port (default: 9419), and credentials when prompte
 Choose output location and whether to enable data masking
 The script collects data from all parameter-free GET endpoints and exports the results
 
+A debug log (`CCollectorExport_<timestamp>.log`, full console transcript including per-version Swagger discovery errors and per-endpoint failures) is written next to the JSON export. Attach it when reporting an issue. Note: the log is **not masked** and contains the server address.
+
 ### Requirements
 
 PowerShell 5.1 or later

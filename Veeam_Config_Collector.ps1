@@ -7,13 +7,14 @@
 # Excludes sensitive endpoints (credentials, passwords, user data) for security.
 
 .NOTES
-Version: 1.0.4
+Version: 1.0.5
 #>
 
 # Script Constants
 # Configuration constants for easy maintenance
 $DEFAULT_VBR_PORT = 9419
 $API_TIMEOUT_SECONDS = 30
+$SWAGGER_TIMEOUT_SECONDS = 60   # swagger.json is several MB; allow time on slow links/VPN
 $REQUEST_DELAY_MS = 100
 $MAX_RETRIES = 2
 $RETRY_BASE_DELAY_SECONDS = 2
@@ -285,6 +286,42 @@ if (-not ([System.Management.Automation.PSTypeName]'ServerCertificateValidationC
 # Force TLS 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# Common parameters for every web call.
+# -UseBasicParsing: avoids dependency on the IE engine in Windows PowerShell 5.1 (no-op in PS 7+).
+# -SkipCertificateCheck: PS 7+ uses HttpClient, which ignores ServicePointManager, so the
+#   callback above has no effect there and self-signed certs must be skipped explicitly.
+$webRequestParams = @{ UseBasicParsing = $true }
+if ($PSVersionTable.PSVersion.Major -ge 6) {
+    $webRequestParams.SkipCertificateCheck = $true
+}
+
+# Builds a one-line description of a failed web call (HTTP status, exception chain)
+function Get-ErrorDetail {
+    param($ErrorRecord)
+    $ex = $ErrorRecord.Exception
+    $parts = @()
+    if ($ex.Response) {
+        try { $parts += "HTTP $([int]$ex.Response.StatusCode) $($ex.Response.StatusCode)" } catch {}
+    }
+    $parts += "$($ex.GetType().Name): $($ex.Message)"
+    $inner = $ex.InnerException
+    while ($inner) {
+        $parts += "-> $($inner.GetType().Name): $($inner.Message)"
+        $inner = $inner.InnerException
+    }
+    return ($parts -join ' ')
+}
+
+# Stops the debug log transcript (safe to call multiple times)
+$script:transcriptStarted = $false
+function Stop-CollectorLog {
+    if ($script:transcriptStarted) {
+        try { Stop-Transcript | Out-Null } catch {}
+        $script:transcriptStarted = $false
+        Write-Host "Debug log saved to: $logFile" -ForegroundColor Gray
+    }
+}
+
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "VBR Configuration Collector Script" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
@@ -310,6 +347,22 @@ if ($changeLocation -eq "Y" -or $changeLocation -eq "y") {
 else {
     $outputPath = $defaultPath
 }
+
+# Start debug log (console transcript) next to the export files.
+# Note: the log is NOT masked - it contains the server address and endpoint paths.
+$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+$logFile = Join-Path -Path $outputPath -ChildPath "CCollectorExport_${timestamp}.log"
+try {
+    Start-Transcript -Path $logFile -ErrorAction Stop | Out-Null
+    $script:transcriptStarted = $true
+    Write-Host "Debug log: $logFile" -ForegroundColor Gray
+}
+catch {
+    Write-Host "Warning: Could not start debug log: $($_.Exception.Message)" -ForegroundColor DarkYellow
+}
+
+Write-Host "Environment: PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition)), OS $([Environment]::OSVersion.VersionString)" -ForegroundColor Gray
+Write-Host "Target: https://${VBRServer}:${VBRPort}" -ForegroundColor Gray
 
 Write-Host ""
 
@@ -369,28 +422,33 @@ $swaggerJson = $null
 
 foreach ($version in $versionPatterns) {
     $swaggerUrl = "https://${VBRServer}:${VBRPort}/swagger/${version}/swagger.json"
-    
+
     try {
-        $response = Invoke-WebRequest -Uri $swaggerUrl -Method Get -ErrorAction Stop -TimeoutSec 5
+        $response = Invoke-WebRequest @webRequestParams -Uri $swaggerUrl -Method Get -ErrorAction Stop -TimeoutSec $SWAGGER_TIMEOUT_SECONDS
         if ($response.StatusCode -eq 200) {
             $swaggerJson = $response.Content | ConvertFrom-Json
             $discoveredVersion = $version
             Write-Host "SUCCESS! Found Swagger version: $version" -ForegroundColor Green
             break
         }
+        Write-Host "  ${version}: unexpected HTTP $($response.StatusCode)" -ForegroundColor DarkGray
     }
     catch {
-        # Silently continue to next version
+        Write-Host "  ${version}: $(Get-ErrorDetail $_)" -ForegroundColor DarkGray
     }
 }
 
 if (-not $discoveredVersion) {
     Write-Host "ERROR: Could not discover any Swagger API version!" -ForegroundColor Red
+    Write-Host "See the per-version errors above for the actual cause." -ForegroundColor Yellow
     Write-Host "Please verify:" -ForegroundColor Yellow
     Write-Host "  - Server address: $VBRServer" -ForegroundColor Yellow
-    Write-Host "  - Port: $VBRPort" -ForegroundColor Yellow
-    Write-Host "  - Network connectivity" -ForegroundColor Yellow
+    Write-Host "  - Port: $VBRPort (Test-NetConnection $VBRServer -Port $VBRPort)" -ForegroundColor Yellow
+    Write-Host "  - Network connectivity / firewall" -ForegroundColor Yellow
     Write-Host "  - VBR REST API service is running" -ForegroundColor Yellow
+    Write-Host "  - Swagger UI opens in a browser: https://${VBRServer}:${VBRPort}/swagger" -ForegroundColor Yellow
+    Write-Host "    (HTTP 404 for all versions = VBR uses a REST API revision not in `$versionPatterns)" -ForegroundColor Yellow
+    Stop-CollectorLog
     exit 1
 }
 
@@ -421,7 +479,7 @@ $headers = @{
 }
 
 try {
-    $tokenResponse = Invoke-RestMethod -Uri $tokenUrl -Method Post -Body $body -Headers $headers
+    $tokenResponse = Invoke-RestMethod @webRequestParams -Uri $tokenUrl -Method Post -Body $body -Headers $headers -TimeoutSec $API_TIMEOUT_SECONDS -ErrorAction Stop
     $token = $tokenResponse.access_token
     
     # Clear plaintext credentials from memory immediately
@@ -433,11 +491,15 @@ try {
 }
 catch {
     Write-Host "Authentication failed!" -ForegroundColor Red
-    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Error: $(Get-ErrorDetail $_)" -ForegroundColor Red
     Write-Host "Status Code: $($_.Exception.Response.StatusCode.value__)" -ForegroundColor Red
-    
+
     # Try to get more details from the response
-    if ($_.Exception.Response) {
+    if ($_.ErrorDetails -and $_.ErrorDetails.Message) {
+        # PS 7+ (and some 5.1 cases) expose the response body here
+        Write-Host "Response Body: $($_.ErrorDetails.Message)" -ForegroundColor Red
+    }
+    elseif ($_.Exception.Response) {
         try {
             $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
             $responseBody = $reader.ReadToEnd()
@@ -450,6 +512,7 @@ catch {
     
     Write-Host "`nNote: The working script uses these same credentials successfully." -ForegroundColor Yellow
     Write-Host "Please verify the server, username, and password in the script." -ForegroundColor Yellow
+    Stop-CollectorLog
     exit 1
 }
 
@@ -555,7 +618,7 @@ foreach ($endpoint in $getEndpoints) {
     
     for ($attempt = 1; $attempt -le $MAX_RETRIES; $attempt++) {
         try {
-            $response = Invoke-RestMethod -Uri $url -Method Get -Headers $headers -TimeoutSec $API_TIMEOUT_SECONDS -ErrorAction Stop
+            $response = Invoke-RestMethod @webRequestParams -Uri $url -Method Get -Headers $headers -TimeoutSec $API_TIMEOUT_SECONDS -ErrorAction Stop
             
             # Determine record count
             $recordCount = 0
@@ -657,7 +720,7 @@ $logoutHeaders = @{
 }
 
 try {
-    Invoke-RestMethod -Uri $logoutUrl -Method Post -Headers $logoutHeaders -ErrorAction Stop | Out-Null
+    Invoke-RestMethod @webRequestParams -Uri $logoutUrl -Method Post -Headers $logoutHeaders -TimeoutSec $API_TIMEOUT_SECONDS -ErrorAction Stop | Out-Null
     Write-Host "Logout successful - token revoked" -ForegroundColor Green
 }
 catch {
@@ -675,7 +738,7 @@ Write-Host ""
 # Step 6: Export results to JSON
 Write-Host "Step 6: Exporting results..." -ForegroundColor Cyan
 
-$timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+# $timestamp is set when the debug log starts, so .json/.log/_mapping.txt share one name
 $outputFile = Join-Path -Path $outputPath -ChildPath "CCollectorExport_${timestamp}.json"
 
 # Apply data masking if enabled
@@ -765,6 +828,8 @@ $maskingRulesByField = $null
 $global:maskingMap = $null
 [System.GC]::Collect()
 [System.GC]::WaitForPendingFinalizers()
+
+Stop-CollectorLog
 
 # Ask if user wants to open the output file location
 $openFolder = Read-Host "Do you want to open the output folder? (Y/N) [Default: N]"
